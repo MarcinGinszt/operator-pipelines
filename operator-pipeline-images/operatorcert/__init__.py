@@ -3,7 +3,7 @@ import logging
 import pathlib
 import re
 from urllib.parse import urljoin
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import requests
 import yaml
@@ -171,7 +171,7 @@ def ocp_version_info(
     }
 
 
-def get_repo_and_org_from_github_url(git_repo_url: str) -> (str, str):
+def get_repo_and_org_from_github_url(git_repo_url: str) -> Tuple[str, str]:
     """
     Parse github repository URL to get the organization (or user) and
     repository name
@@ -218,24 +218,31 @@ def get_files_added_in_pr(
     rsp = requests.get(compare_changes_url)
     rsp.raise_for_status()
 
-    added_files_names = []
+    added_files = []
     modified_files = []
+    allowed_files = []
+
     for file in rsp.json().get("files", []):
         if file["status"] == "added":
-            added_files_names.append(file["filename"])
+            added_files.append(file["filename"])
         else:
             # To prevent the modifications to previously merged bundles,
             # we allow only changed with status "added"
             modified_files.append(file)
 
+    allowed_files.extend(added_files)
+
     if modified_files:
         for modified_file in modified_files:
-            logging.error(
-                f"Change not permitted: file: {modified_file['filename']}, status: {modified_file['status']}"
-            )
-        raise RuntimeError("There are changes done to previously merged files")
+            if not modified_file["filename"].endswith("ci.yaml"):
+                logging.error(
+                    f"Change not permitted: file: {modified_file['filename']}, status: {modified_file['status']}"
+                )
+                raise RuntimeError("There are changes done to previously merged files")
+            else:
+                allowed_files.append(modified_file["filename"])
 
-    return added_files_names
+    return allowed_files
 
 
 def verify_changed_files_location(
@@ -260,16 +267,16 @@ def verify_changed_files_location(
     wrong_changes = False
     for file_path in changed_files:
         if file_path.startswith(path) or file_path == config_path:
-            logging.info(f"Change path ok: {file_path}")
+            logging.info(f"Permitted change: {file_path}")
         else:
-            logging.error(f"Wrong change path: {file_path}")
+            logging.error(f"Unpermitted change: {file_path}")
             wrong_changes = True
 
     if wrong_changes:
-        raise RuntimeError("There are changes in the invalid path")
+        raise RuntimeError("There are unpermitted file changes")
 
 
-def parse_pr_title(pr_title: str) -> (str, str):
+def parse_pr_title(pr_title: str) -> Tuple[str, str]:
     """
     Test, if PR title complies to regex.
     If yes, extract the Bundle name and version.
